@@ -3,8 +3,8 @@ import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
 
-from model import NeuralPlanner
-from mock_data_gen import get_mock_batch
+from model.model import NeuralPlanner
+from model.mock_data_gen import get_mock_batch
 
 def train():
     
