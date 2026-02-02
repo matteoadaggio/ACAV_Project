@@ -7,97 +7,106 @@ from model import NeuralPlanner
 from dataset import NuScenesBEVDataset
 
 def visualize_prediction():
-    # Setup
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Inference running on: {device}")
     
-    # Paths
+    # Graphic Parameters
+    IMG_SIZE = 400
+    SCALE = 4.0
+    CENTER_X = 200     
+    CENTER_Y = 200     
+    
+    # Load paths
     current_dir = os.path.dirname(os.path.abspath(__file__))
     model_path = os.path.join(current_dir, 'neural_planner_model.pth')
     data_root = os.path.join(current_dir, '../bev_data')
     
-    # Load the model
-    # IMPORTANT: Must have the same parameters as during training!
+    #Load Model
     model = NeuralPlanner(in_channels=3, num_waypoints=10).to(device)
     
     if not os.path.exists(model_path):
-        print(f"Error: Model weights not found at {model_path}")
+        print(f"Error: Weights not found at {model_path}")
         return
 
     try:
         model.load_state_dict(torch.load(model_path, map_location=device))
-        print("Weights loaded successfully!")
+        print("Weights loaded.")
     except Exception as e:
-        print(f"Error loading weights: {e}")
+        print(f"Error load_state_dict: {e}")
         return
 
-    model.eval() # Turns off Dropout and Batchnorm for inference
+    model.eval()
 
-    # Load a random sample
+    # Load Dataset
     try:
         dataset = NuScenesBEVDataset(data_root=data_root)
     except FileNotFoundError:
-        print(f"Error: Dataset not found at {data_root}")
+        print("Error: Dataset not found.")
         return
+
+    # Coordinate Conversion Function
+    def to_pixel(pts_meters):
+        """
+        Converts meters to pixels according to the user's specification:
+        - X (Longitudinal/Forward) -> Image X Axis (To the Right)
+        - Y (Lateral/Left)         -> Image Y Axis (Upward)
         
-    print(f"Dataset loaded: {len(dataset)} samples.")
-    
-    # Loop to view more than one if needed
-    for i in range(3):
+        """
+        x_meters = pts_meters[:, 0]
+        y_meters = pts_meters[:, 1]
+        
+        # X: Right = Forward (Add to center)
+        u = CENTER_X + (x_meters * SCALE)
+        
+        # Y: Up = Left (Subtract from center because image Y goes down)
+        v = CENTER_Y - (y_meters * SCALE)
+        
+        return u, v
+
+    # Visualization Loop
+    print("Generating images...")
+    for i in range(5): 
         idx = random.randint(0, len(dataset)-1)
         image_tensor, target_waypoints = dataset[idx]
         
-        # Prepare the image for visualization (C,H,W) -> (H,W,C)
+        # Prepare background image
         bg_image = image_tensor.permute(1, 2, 0).numpy()
-
-        # Prediction
+        
+        # Inference
         with torch.no_grad():
-            # Add batch dimension [1, 3, 400, 400]
             input_tensor = image_tensor.unsqueeze(0).to(device)
-            predicted_waypoints = model(input_tensor) # Output [1, 10, 2]
+            predicted_waypoints = model(input_tensor)
             
+        # Data in meters
         pred_points = predicted_waypoints[0].cpu().numpy()
         true_points = target_waypoints.numpy()
 
+        # Conversion to pixels
+        pred_u, pred_v = to_pixel(pred_points)
+        true_u, true_v = to_pixel(true_points)
+
         # Plotting
-        # Conversion parameters (must match generate_data.py)
-        # BEV 400x400, Range +/- 50m.
-        # Center (200, 200). Resolution 0.25 m/px.
-        scale = 4.0
-        center_x, center_y = 200, 200
-        
-        # Conversion Meters -> Pixels for visualization
-        # Usually in BEV plots:
-        # X (forward 50m) -> Y pixel (up, 0)
-        # Y (left 50m) -> X pixel (left, 0)
-        
-        def to_pixel(pts_meters):
-            # pts_meters is [N, 2] (x, y)
-            
-            # Verify the transformation used in generate_data.py if possible
-            
-            # If X=forward, Y=left
-            px = 200 - (pts_meters[:, 1] * 4)
-            py = 200 - (pts_meters[:, 0] * 4)
-            return px, py
-
-        pred_px, pred_py = to_pixel(pred_points)
-        true_px, true_py = to_pixel(true_points)
-
-        plt.figure(figsize=(8, 8))
+        plt.figure(figsize=(10, 10))
         plt.imshow(bg_image)
-        plt.plot(true_px, true_py, 'g-o', linewidth=2, label='Ground Truth')
-        plt.plot(pred_px, pred_py, 'r-x', linewidth=2, label='Model Prediction')
-        plt.plot(center_x, center_y, 'bo', markersize=8, label='EGO')
         
-        plt.legend()
-        plt.title(f"Sample {idx} - Visual Check")
-        plt.tight_layout()
+        # Draw Trajectories
+        plt.plot(true_u, true_v, 'g-o', linewidth=3, label='Ground Truth', alpha=0.7)
+        plt.plot(pred_u, pred_v, 'r-x', linewidth=3, label='Model Prediction')
         
-        save_path = f"inference_test_{i}.png"
-        plt.savefig(save_path)
-        print(f"Saved plot: {save_path}")
-        plt.show()
+        # Draw the Car (Center and Direction)
+        plt.plot(CENTER_X, CENTER_Y, 'bo', markersize=12, label='EGO Vehicle')
+        
+        # Arrow to indicate the presumed "Forward" direction
+        plt.arrow(CENTER_X, CENTER_Y, 40, 0, head_width=10, head_length=10, fc='yellow', ec='yellow', label='X Direction (Forward)')
+
+        plt.legend(loc='upper right')
+        plt.title(f"Sample {idx} - Axis Verification")
+        plt.axis('off') # Hide axis numbers for cleanliness
+        
+        # Saving
+        plt.savefig(f"inference_corrected_{i}.png")
+        plt.close()
+        print(f"Saved inference_corrected_{i}.png")
 
 if __name__ == "__main__":
     visualize_prediction()
