@@ -5,21 +5,19 @@ from torchvision.models import resnet18
 class NeuralPlanner(nn.Module):
     def __init__(self, in_channels=3, num_waypoints=10):
         """
-        Inizializza il modello.
+        Initialize the model.
         Args:
-            in_channels: Numero di canali dell'immagine BEV (Mappa, Ego, Predizione).
-            num_waypoints: Quanti punti futuri vogliamo predire.
+            in_channels: Number of channels in the BEV image (Map, Ego, Prediction).
+            num_waypoints: How many future points we want to predict.
         """
         super(NeuralPlanner, self).__init__()
         
-        # 1. Carichiamo la Backbone
-        # Usiamo ResNet18. weights=None (pesi casuali)
-        # imparerà tutto da zero guardando le mappe.
+        # Uploading backbone ResNet18
+        # weights=None (random weights)
         self.backbone = resnet18(weights=None)
         
-        # 2. Modifica dell'Input
-        # La ResNet originale si aspetta foto RGB (3 canali). 
-        # riscriviamo questo layer per renderlo flessibile.
+        # Input Modification
+        # ResNet relys on 3 input channels by default
         self.backbone.conv1 = nn.Conv2d(
             in_channels, 
             64,            
@@ -29,12 +27,12 @@ class NeuralPlanner(nn.Module):
             bias=False
         )
         
-        # 3. Modifica dell'Output
-        # Dobbiamo arrivare ad un livello che restituisce 10 coordinate.
+        # Output Modification
+        # We need to reach a level that returns 10 coordinates.
         
         num_features = self.backbone.fc.in_features
         
-        # Sostituiamo il layer 'fc' (Fully Connected) originale
+        # Replace the original 'fc' (Fully Connected) layer
         self.backbone.fc = nn.Sequential(
             nn.Linear(num_features, 512),
             nn.ReLU(),                    
@@ -47,36 +45,36 @@ class NeuralPlanner(nn.Module):
     def forward(self, x):
         """
         Forward Pass.
-        l'input attraversa i layer ed esce la predizione.
+        The input passes through the layers and the prediction comes out.
         """
-        # x shape in ingresso: [Batch, Canali, H, W]
+        # x input shape: [Batch, Channels, H, W]
         x = self.backbone(x)
         
-        # x ha shape: [Batch, num_waypoints * 2]
+        # x shape: [Batch, num_waypoints * 2]
         
         # Reshape:
-        # -1 non modifica batch size
-        # self.num_waypoints è il numero di punti (10)
-        # 2 sono le coordinate (x, y)
+        # -1 does not change batch size
+        # self.num_waypoints is the number of points (10)
+        # 2 are the coordinates (x, y)
         return x.view(-1, self.num_waypoints, 2)
 
-# --- BLOCCO DI TEST ---
-if __name__ == "__main__":
-    # 1. Creiamo il modello
+# --- TEST BLOCK ---
+"""if __name__ == "__main__":
+    # 1. Create the model
     model = NeuralPlanner(in_channels=3, num_waypoints=10)
-    print("Modello creato")
+    print("Model created")
     
-    # 2. Creiamo un dato finto (Batch=2)
+    # 2. Create dummy data (Batch=2)
     dummy_input = torch.randn(2, 3, 200, 200)
     
-    # 3. Proviamo a fargli fare una predizione
+    # 3. Try to make a prediction
     output = model(dummy_input)
     
     print(f"Input shape: {dummy_input.shape}")
     print(f"Output shape: {output.shape}")
     
-    # Verifica dimensionale
+    # Dimension check
     if output.shape == (2, 10, 2):
-        print("Le dimensioni sono corrette.")
+        print("Dimensions are correct.")
     else:
-        print("Errore: Le dimensioni non sono corrette!")
+        print("Error: Dimensions are not correct!")"""

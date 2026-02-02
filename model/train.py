@@ -3,78 +3,85 @@ import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
 
-from model.model import NeuralPlanner
-from model.mock_data_gen import get_mock_batch
+from torch.utils.data import DataLoader, random_split
+from dataset import NuScenesBEVDataset
+from model import NeuralPlanner
 
 def train():
     
-    # Configurazione dispositivo
+    # Device configuration
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    #Creazione del modello
-    model = NeuralPlanner(in_channels=3, num_waypoints=10).to(device)
-    
-    model.train()
-    
-    #Parametri di training
+    # Training parameters
     LR = 1e-4
     EPOCHS = 100
-    BATCH_SIZE = 8
+    BATCH_SIZE = 16 
     
-    # Definizione dell'ottimizzatore
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=LR)
+    # Model creation
+    model = NeuralPlanner(in_channels=3, num_waypoints=10).to(device)
     
-    # Generiamo UN SOLO batch e usiamo sempre quello.
-    # Se la rete funziona, deve riuscire ad arrivare a Loss -> 0.
-    inputs, targets = get_mock_batch(batch_size=BATCH_SIZE)
-    
-    # Spostiamo i dati sul dispositivo
-    inputs = inputs.to(device)
-    targets = targets.to(device)
+    # Instantiate the Dataset
+    try:
+        full_dataset = NuScenesBEVDataset(data_root='../bev_data')
+    except FileNotFoundError:
+        print("Errore: Cartella '../bev_data' non trovata.")
+        return
 
+    # Train/Validation Split (80% / 20%)
+    train_size = int(0.8 * len(full_dataset))
+    val_size = len(full_dataset) - train_size
+    train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
+    
+    # DataLoader creation
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    
+    print(f"Dati: {len(train_dataset)} training, {len(val_dataset)} validation")
+    
+    # Optimizer and Loss Function
+    criterion = nn.MSELoss()
+    optimizer = optim.AdamW(model.parameters(), lr=LR)
+    
     print("Inizio Training...")
     
     loss_history = []
 
-    # 5. IL LOOP DI TRAINING
     for epoch in range(EPOCHS):
+        model.train()
+        running_loss = 0.0
         
-        # A. Zero Gradients
-        # Puliamo i gradienti vecchi prima di calcolare quelli nuovi
-        optimizer.zero_grad()
+        for i, (inputs, targets) in enumerate(train_loader):
+            inputs, targets = inputs.to(device), targets.to(device)
+            
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            loss.backward()
+            optimizer.step()
+            
+            running_loss += loss.item()
+            
+        avg_loss = running_loss / len(train_loader)
         
-        # B. Forward Pass
-        # Chiediamo al modello di predire
-        predictions = model(inputs)
+        loss_history.append(avg_loss)
         
-        # C. Calcolo Loss
-        loss = criterion(predictions, targets)
-        
-        # D. Backward Pass
-        # Calcola i gradienti
-        loss.backward()
-        
-        # E. Optimizer Step
-        # Aggiorna effettivamente i pesi
-        optimizer.step()
-        
-        # Salviamo la loss per il grafico
-        loss_history.append(loss.item())
-        
-        if (epoch + 1) % 10 == 0:
-            print(f"Epoch [{epoch+1}/{EPOCHS}] | Loss: {loss.item():.6f}")
+        if (epoch+1) % 10 == 0 or epoch == 0:
+            print(f"Epoch {epoch+1}/{EPOCHS} | Loss: {avg_loss:.6f}")
 
-    print("Training completato!")
-
-    # 6. VISUALIZZAZIONE DELLA LOSS
-    plt.plot(loss_history)
-    plt.title("Curva di Apprendimento (Loss)")
+    # Loss Plotting
+    plt.figure(figsize=(10, 5))
+    plt.plot(loss_history, label='Training Loss')
+    plt.title("Curva di Apprendimento")
     plt.xlabel("Epoche")
-    plt.ylabel("Errore (MSE)")
+    plt.ylabel("Errore Medio (MSE in metri^2)")
+    plt.legend()
     plt.grid(True)
+    
+    # Model saving
     plt.show()
+    torch.save(model.state_dict(), 'neural_planner_model.pth')
+    print("Modello salvato come neural_planner_model.pth")
 
 if __name__ == "__main__":
     train()
