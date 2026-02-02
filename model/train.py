@@ -25,7 +25,7 @@ def train():
     try:
         full_dataset = NuScenesBEVDataset(data_root='../bev_data')
     except FileNotFoundError:
-        print("Errore: Cartella '../bev_data' non trovata.")
+        print("Error: Folder '../bev_data' not found.")
         return
 
     # Train/Validation Split (80% / 20%)
@@ -37,13 +37,13 @@ def train():
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
     
-    print(f"Dati: {len(train_dataset)} training, {len(val_dataset)} validation")
+    print(f"Data: {len(train_dataset)} training, {len(val_dataset)} validation")
     
     # Optimizer and Loss Function
     criterion = nn.MSELoss()
     optimizer = optim.AdamW(model.parameters(), lr=LR)
     
-    print("Inizio Training...")
+    print("Starting Training...")
     
     loss_history = []
 
@@ -72,16 +72,16 @@ def train():
     # Loss Plotting
     plt.figure(figsize=(10, 5))
     plt.plot(loss_history, label='Training Loss')
-    plt.title("Curva di Apprendimento")
-    plt.xlabel("Epoche")
-    plt.ylabel("Errore Medio (MSE in metri^2)")
+    plt.title("Learning Curve")
+    plt.xlabel("Epochs")
+    plt.ylabel("Mean Error (MSE in meters^2)")
     plt.legend()
     plt.grid(True)
     
     # Model saving
     plt.show()
     torch.save(model.state_dict(), 'neural_planner_model.pth')
-    print("Modello salvato come neural_planner_model.pth")
+    print("Model saved as neural_planner_model.pth")
 
 if __name__ == "__main__":
     train()
