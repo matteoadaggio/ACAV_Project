@@ -10,22 +10,22 @@ class NuScenesBEVDataset(Dataset):
     def __init__(self, data_root='../bev_data', transform=None):
         """
         Args:
-            data_root (string): Percorso alla cartella bev_data.
+            data_root (string): path to the bev_data folder.
         """
         self.data_root = data_root
         self.images_dir = os.path.join(data_root, 'images')
         self.waypoints_dir = os.path.join(data_root, 'waypoints')
         
-        # Troviamo tutti i file delle immagini ordinati
+        # Find all image files sorted
         self.image_files = sorted(glob.glob(os.path.join(self.images_dir, '*.png')))
         
-        # Verifica presenza dati
+        # Check data presence
         if len(self.image_files) == 0:
-            raise RuntimeError(f"Nessuna immagine trovata in {self.images_dir}")
+            raise RuntimeError(f"No image found in {self.images_dir}")
             
-        print(f"Dataset caricato: trovati {len(self.image_files)} campioni.")
+        print(f"Dataset loaded: found {len(self.image_files)} samples.")
 
-        # Trasformazione PIL a Tensore 
+        # PIL to Tensor transformation
         if transform:
             self.transform = transform
         else:
@@ -37,25 +37,25 @@ class NuScenesBEVDataset(Dataset):
         return len(self.image_files)
 
     def __getitem__(self, idx):
-        # 1. Carica l'immagine
+        # 1. Load image
         img_path = self.image_files[idx]
         image = Image.open(img_path).convert('RGB') 
         image_tensor = self.transform(image)
 
-        # 2. Carica i waypoint
+        # 2. Load waypoints
         base_name = os.path.basename(img_path).replace('.png', '_waypoints.npy')
         waypoint_path = os.path.join(self.waypoints_dir, base_name)
         
-        # Gestione naming alternativo
+        # Alternative naming handling
         if not os.path.exists(waypoint_path):
             waypoint_path = os.path.join(self.waypoints_dir, base_name.replace('_sample', ''))
 
         if not os.path.exists(waypoint_path):
-             raise FileNotFoundError(f"Waypoint non trovato per {base_name}")
+             raise FileNotFoundError(f"Waypoint not found for {base_name}")
 
         waypoints = np.load(waypoint_path)
         
-        # Il modello vuole 10 punti, gestione edge cases
+        # The model expects 10 points, handle edge cases
         target_num_points = 10
         current_num_points = waypoints.shape[0]
         
@@ -74,13 +74,13 @@ class NuScenesBEVDataset(Dataset):
         waypoints_tensor = torch.from_numpy(waypoints).float()
         return image_tensor, waypoints_tensor
 
-# --- TEST DEL DATASET ---
+# --- DATASET TEST ---
 """if __name__ == "__main__":
     try:
         ds = NuScenesBEVDataset(data_root='../bev_data')
         img, wp = ds[0]
-        print(f"Input Image Shape: {img.shape}") # Atteso: [3, 400, 400]
-        print(f"Target Waypoints Shape: {wp.shape}") # Atteso: [10, 2]
-        print("Dataset Test Superato")
+        print(f"Input Image Shape: {img.shape}") # Expected: [3, 400, 400]
+        print(f"Target Waypoints Shape: {wp.shape}") # Expected: [10, 2]
+        print("Dataset Test Passed")
     except Exception as e:
-        print(f"Errore nel Dataset: {e}")"""
+        print(f"Error in Dataset: {e}")"""

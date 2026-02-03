@@ -47,7 +47,8 @@ def run_autonomous_stack():
         # B. CONTROL (LQR)
         # Calculate steering based on predicted trajectory
         steer_rad = controller.compute_steering(pred_waypoints, velocity=15.0/3.6) # 15 km/h
-        steer_deg = np.degrees(steer_rad)
+        tire_steer_deg = np.degrees(steer_rad)
+        steering_wheel_deg= tire_steer_deg * 16.0 # Assuming a steering ratio of 16:1
         
         # --- C. VISUALIZATION "DASHBOARD" ---
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
@@ -73,7 +74,7 @@ def run_autonomous_stack():
         ax2.set_xlim(-1, 1)
         ax2.set_ylim(-1, 1)
         ax2.set_aspect('equal')
-        ax2.set_title(f"Control Output\nSteering: {steer_deg:.2f}°")
+        ax2.set_title(f"Control Output\nSteering: {tire_steer_deg:.1f}° | Wheel: {steering_wheel_deg:.1f}°")
         ax2.axis('off')
         
         # Steering Wheel Circle
@@ -83,7 +84,7 @@ def run_autonomous_stack():
         # Steering Wheel Spokes (Rotate based on steer_deg)
         # Note: positive steer = left. In trigonometric plot, positive angle = counterclockwise (left).
         # So the rotation is consistent.
-        rotation = steer_deg 
+        rotation = steering_wheel_deg 
         
         # Central line (direction indicator)
         ax2.plot([0, 0.8 * np.sin(np.radians(-rotation))], 
@@ -91,15 +92,15 @@ def run_autonomous_stack():
         
         # Action Text
         action_text = "STRAIGHT"
-        if steer_deg > 2: action_text = "LEFT"
-        elif steer_deg < -2: action_text = "RIGHT"
+        if tire_steer_deg > 2: action_text = "LEFT"
+        elif tire_steer_deg < -2: action_text = "RIGHT"
         
         ax2.text(0, -1.2, action_text, ha='center', fontsize=16, fontweight='bold', 
-                 color='blue' if abs(steer_deg) > 2 else 'gray')
+                 color='blue' if abs(tire_steer_deg) > 2 else 'gray')
 
         plt.tight_layout()
         plt.savefig(f"full_stack_result_{i}.png")
-        print(f"Saved full_stack_result_{i}.png -> Steering: {steer_deg:.2f}°")
+        print(f"Saved full_stack_result_{i}.png -> Steering: {tire_steer_deg:.1f}° | Wheel: {steering_wheel_deg:.1f}°")
         plt.show()
 
 if __name__ == "__main__":
