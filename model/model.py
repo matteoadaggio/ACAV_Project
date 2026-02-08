@@ -40,6 +40,7 @@ class NeuralPlanner(nn.Module):
         self.regressor = nn.Sequential(
             nn.Linear(self.hidden_size, 128),
             nn.ReLU(),
+            nn.Dropout(0.3), # Regularization to prevent overfitting
             nn.Linear(128, 2) # Output: x, y
         )
 

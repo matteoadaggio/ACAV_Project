@@ -128,6 +128,42 @@ class BEVGenerator:
         rotation = Quaternion(pose_rec['rotation'])
         
         return translation, rotation
+
+    def get_ego_velocity(self, sample_token: str) -> float:
+        """
+        Estimate ego velocity magnitude (m/s) using finite differences.
+        """
+        sample = self.nusc.get('sample', sample_token)
+        
+        # Current position
+        current_pos, _ = self.get_ego_pose(sample['data']['LIDAR_TOP'])
+        current_time = sample['timestamp']
+        
+        # Try to get previous sample for backward difference
+        if sample['prev'] != '':
+             prev_sample = self.nusc.get('sample', sample['prev'])
+             prev_pos, _ = self.get_ego_pose(prev_sample['data']['LIDAR_TOP'])
+             prev_time = prev_sample['timestamp']
+             
+             dt = (current_time - prev_time) * 1e-6 # microseconds to seconds
+             dist = np.linalg.norm(current_pos - prev_pos)
+             
+             if dt > 0:
+                 return dist / dt
+                 
+        # If no previous (first sample), try next sample
+        if sample['next'] != '':
+             next_sample = self.nusc.get('sample', sample['next'])
+             next_pos, _ = self.get_ego_pose(next_sample['data']['LIDAR_TOP'])
+             next_time = next_sample['timestamp']
+             
+             dt = (next_time - current_time) * 1e-6
+             dist = np.linalg.norm(next_pos - current_pos)
+             
+             if dt > 0:
+                 return dist / dt
+                 
+        return 0.0
     
     def extract_future_waypoints(self, sample_token: str, num_waypoints: int = 10) -> np.ndarray:
         """
@@ -597,6 +633,7 @@ class BEVGenerator:
                 'cam_front_path': cam_path,
                 'waypoint_path': waypoint_path,
                 'num_waypoints': len(waypoints),
+                'ego_velocity': self.get_ego_velocity(sample_token), # New field: m/s
                 **metadata
             }
             results.append(result)
