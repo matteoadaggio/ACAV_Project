@@ -14,6 +14,7 @@ from pyquaternion import Quaternion
 from typing import Tuple, List, Dict
 import cv2
 from tqdm import tqdm
+from nuscenes.map_expansion.map_api import NuScenesMap
 
 
 class BEVGenerator:
@@ -48,6 +49,11 @@ class BEVGenerator:
         os.makedirs(os.path.join(output_dir, 'images'), exist_ok=True)
         os.makedirs(os.path.join(output_dir, 'waypoints'), exist_ok=True)
         os.makedirs(os.path.join(output_dir, 'metadata'), exist_ok=True)
+        os.makedirs(os.path.join(output_dir, 'cam_front'), exist_ok=True)
+
+        # Cache for map objects keyed by location name
+        self._map_cache: Dict[str, NuScenesMap] = {}
+        self._map_geometry_cache: Dict[str, Dict[str, List[Dict]]] = {}
         
     def world_to_bev(self, points: np.ndarray) -> np.ndarray:
         """
@@ -163,7 +169,8 @@ class BEVGenerator:
     
     def create_bev_image(self, sample_token: str, 
                          use_lidar: bool = True,
-                         use_annotations: bool = True) -> Tuple[np.ndarray, Dict]:
+                         use_annotations: bool = True,
+                         use_map: bool = True) -> Tuple[np.ndarray, Dict]:
         """
         Create BEV image for a sample
         
@@ -171,6 +178,7 @@ class BEVGenerator:
             sample_token: Sample token
             use_lidar: Whether to include lidar points
             use_annotations: Whether to include object annotations
+            use_map: Whether to include map-based road area
             
         Returns:
             bev_image: BEV image as numpy array
@@ -186,6 +194,27 @@ class BEVGenerator:
         
         # Get ego pose for this sample
         ego_pos, ego_rot = self.get_ego_pose(sample['data']['LIDAR_TOP'])
+
+        # Channel 0 (B): Road area from map (low intensity)
+        if use_map:
+            self._add_road_area_to_bev(
+                bev_image=bev_image,
+                ego_pos=ego_pos,
+                ego_rot=ego_rot,
+                scene_token=sample['scene_token']
+            )
+            self._add_map_polygons_to_bev(
+                bev_image=bev_image,
+                ego_pos=ego_pos,
+                ego_rot=ego_rot,
+                scene_token=sample['scene_token']
+            )
+            self._add_line_layers_to_bev(
+                bev_image=bev_image,
+                ego_pos=ego_pos,
+                ego_rot=ego_rot,
+                scene_token=sample['scene_token']
+            )
         
         # Channel 2 (R): Lidar points
         if use_lidar:
@@ -234,11 +263,16 @@ class BEVGenerator:
                     category = ann['category_name']
                     is_vehicle = category.startswith('vehicle')
                     is_pedestrian = category.startswith('human')
+                    is_cycle = category.startswith('vehicle.bicycle') or category.startswith('vehicle.motorcycle')
+                    is_movable = category.startswith('movable_object')
+                    is_static_obj = category.startswith('static_object')
                     
                     # Channel assignment in BGR:
                     # Green (index 1) = Dynamic (vehicles, pedestrians)
                     # Blue (index 0) = Static (barriers, cones, etc)
-                    channel = 1 if (is_vehicle or is_pedestrian) else 0
+                    channel = 1 if (is_vehicle or is_pedestrian or is_cycle) else 0
+                    if is_movable or is_static_obj:
+                        channel = 0
                     
                     # Draw filled polygon
                     if len(bev_corners) >= 3:
@@ -259,6 +293,252 @@ class BEVGenerator:
         }
         
         return bev_image, metadata
+
+    def _get_nusc_map(self, scene_token: str) -> NuScenesMap:
+        """
+        Get and cache the NuScenes map for a scene location.
+        """
+        scene = self.nusc.get('scene', scene_token)
+        log = self.nusc.get('log', scene['log_token'])
+        location = log['location']
+
+        if location not in self._map_cache:
+            self._map_cache[location] = NuScenesMap(
+                dataroot=self.nusc.dataroot,
+                map_name=location
+            )
+
+        return self._map_cache[location]
+
+    def _get_map_geometry_cache(self, scene_token: str) -> Dict[str, List[Dict]]:
+        """
+        Build and cache map geometry (polygons/lines) for a scene location.
+        """
+        scene = self.nusc.get('scene', scene_token)
+        log = self.nusc.get('log', scene['log_token'])
+        location = log['location']
+
+        if location in self._map_geometry_cache:
+            return self._map_geometry_cache[location]
+
+        nusc_map = self._get_nusc_map(scene_token)
+
+        polygon_layers = [
+            'drivable_area',
+            'road_segment',
+            'road_block',
+            'carpark_area',
+            'lane',
+            'ped_crossing',
+            'walkway',
+            'stop_line'
+        ]
+        line_layers = ['lane_divider', 'road_divider', 'traffic_light']
+
+        cache: Dict[str, List[Dict]] = {layer: [] for layer in polygon_layers + line_layers}
+
+        for layer_name in polygon_layers:
+            for record in getattr(nusc_map, layer_name):
+                polygon_tokens = record.get('polygon_tokens')
+                if not polygon_tokens:
+                    single_token = record.get('polygon_token')
+                    polygon_tokens = [single_token] if single_token else []
+
+                for polygon_token in polygon_tokens:
+                    polygon = nusc_map.extract_polygon(polygon_token)
+                    coords = np.asarray(polygon.exterior.coords)
+                    if coords.shape[0] < 3:
+                        continue
+                    cache[layer_name].append({
+                        'bounds': polygon.bounds,
+                        'coords': coords
+                    })
+
+        for layer_name in line_layers:
+            for record in getattr(nusc_map, layer_name):
+                line_token = record.get('line_token')
+                if not line_token:
+                    continue
+                line = nusc_map.extract_line(line_token)
+                coords = np.asarray(line.coords)
+                if coords.shape[0] < 2:
+                    continue
+                cache[layer_name].append({
+                    'bounds': line.bounds,
+                    'coords': coords
+                })
+
+        self._map_geometry_cache[location] = cache
+        return cache
+
+    def _add_road_area_to_bev(self,
+                               bev_image: np.ndarray,
+                               ego_pos: np.ndarray,
+                               ego_rot: Quaternion,
+                               scene_token: str) -> None:
+        """
+        Add road/drivable area to the BEV image.
+        """
+        try:
+            geometry_cache = self._get_map_geometry_cache(scene_token)
+        except Exception as exc:
+            print(f"Warning: unable to load map geometry for scene {scene_token[:8]}: {exc}")
+            return
+
+        radius = max(
+            abs(self.bev_range[0]),
+            abs(self.bev_range[1]),
+            abs(self.bev_range[2]),
+            abs(self.bev_range[3])
+        )
+
+        x, y = float(ego_pos[0]), float(ego_pos[1])
+        patch = (x - radius, y - radius, x + radius, y + radius)
+
+        temp_mask = np.zeros((self.bev_size[0], self.bev_size[1]), dtype=np.uint8)
+
+        rot_matrix = ego_rot.inverse.rotation_matrix[:2, :2]
+
+        for geom in geometry_cache.get('drivable_area', []):
+            min_x, min_y, max_x, max_y = geom['bounds']
+            if max_x < patch[0] or min_x > patch[2] or max_y < patch[1] or min_y > patch[3]:
+                continue
+
+            coords = geom['coords']
+
+            # Convert map (global) coordinates to ego frame
+            coords_xy = coords[:, :2] - ego_pos[:2]
+            coords_ego = (rot_matrix @ coords_xy.T).T
+
+            # Convert to BEV coordinates
+            bev_coords, mask = self.world_to_bev(
+                np.hstack([coords_ego, np.zeros((coords_ego.shape[0], 1))])
+            )
+            bev_coords = bev_coords[mask]
+
+            if len(bev_coords) >= 3:
+                pts = bev_coords.astype(np.int32).reshape((-1, 1, 2))
+                cv2.fillPoly(temp_mask, [pts], 128)
+
+        # Merge road area into static channel without overwriting stronger signals
+        bev_image[:, :, 0] = np.maximum(bev_image[:, :, 0], temp_mask)
+
+    def _add_map_polygons_to_bev(self,
+                                 bev_image: np.ndarray,
+                                 ego_pos: np.ndarray,
+                                 ego_rot: Quaternion,
+                                 scene_token: str) -> None:
+        """
+        Add polygonal map layers to the BEV image.
+        """
+        try:
+            geometry_cache = self._get_map_geometry_cache(scene_token)
+        except Exception as exc:
+            print(f"Warning: unable to load map geometry for scene {scene_token[:8]}: {exc}")
+            return
+
+        radius = max(
+            abs(self.bev_range[0]),
+            abs(self.bev_range[1]),
+            abs(self.bev_range[2]),
+            abs(self.bev_range[3])
+        )
+
+        x, y = float(ego_pos[0]), float(ego_pos[1])
+        patch = (x - radius, y - radius, x + radius, y + radius)
+
+        rot_matrix = ego_rot.inverse.rotation_matrix[:2, :2]
+
+        layer_intensity = {
+            'road_segment': 110,
+            'road_block': 100,
+            'carpark_area': 90,
+            'lane': 140,
+            'ped_crossing': 170,
+            'walkway': 150,
+            'stop_line': 200
+        }
+
+        for layer_name, intensity in layer_intensity.items():
+            for geom in geometry_cache.get(layer_name, []):
+                min_x, min_y, max_x, max_y = geom['bounds']
+                if max_x < patch[0] or min_x > patch[2] or max_y < patch[1] or min_y > patch[3]:
+                    continue
+
+                coords = geom['coords']
+                if coords.shape[0] < 3:
+                    continue
+
+                # Convert map (global) coordinates to ego frame
+                coords_xy = coords[:, :2] - ego_pos[:2]
+                coords_ego = (rot_matrix @ coords_xy.T).T
+
+                # Convert to BEV coordinates
+                bev_coords, mask = self.world_to_bev(
+                    np.hstack([coords_ego, np.zeros((coords_ego.shape[0], 1))])
+                )
+                bev_coords = bev_coords[mask]
+
+                if len(bev_coords) >= 3:
+                    pts = bev_coords.astype(np.int32).reshape((-1, 1, 2))
+                    temp_img = bev_image[:, :, 0].copy()
+                    cv2.fillPoly(temp_img, [pts], intensity)
+                    bev_image[:, :, 0] = np.maximum(bev_image[:, :, 0], temp_img)
+
+    def _add_line_layers_to_bev(self,
+                                bev_image: np.ndarray,
+                                ego_pos: np.ndarray,
+                                ego_rot: Quaternion,
+                                scene_token: str) -> None:
+        """
+        Add line-based map layers (lane/road dividers, traffic lights) to the BEV.
+        """
+        try:
+            geometry_cache = self._get_map_geometry_cache(scene_token)
+        except Exception as exc:
+            print(f"Warning: unable to load map geometry for scene {scene_token[:8]}: {exc}")
+            return
+
+        radius = max(
+            abs(self.bev_range[0]),
+            abs(self.bev_range[1]),
+            abs(self.bev_range[2]),
+            abs(self.bev_range[3])
+        )
+
+        x, y = float(ego_pos[0]), float(ego_pos[1])
+        patch = (x - radius, y - radius, x + radius, y + radius)
+
+        rot_matrix = ego_rot.inverse.rotation_matrix[:2, :2]
+        layer_intensity = {
+            'lane_divider': 200,
+            'road_divider': 180,
+            'traffic_light': 210
+        }
+
+        for layer_name, intensity in layer_intensity.items():
+            for geom in geometry_cache.get(layer_name, []):
+                min_x, min_y, max_x, max_y = geom['bounds']
+                if max_x < patch[0] or min_x > patch[2] or max_y < patch[1] or min_y > patch[3]:
+                    continue
+
+                coords = geom['coords']
+                if coords.shape[0] < 2:
+                    continue
+
+                coords_xy = coords[:, :2] - ego_pos[:2]
+                coords_ego = (rot_matrix @ coords_xy.T).T
+
+                bev_coords, mask = self.world_to_bev(
+                    np.hstack([coords_ego, np.zeros((coords_ego.shape[0], 1))])
+                )
+                bev_coords = bev_coords[mask]
+
+                if len(bev_coords) >= 2:
+                    pts = bev_coords.astype(np.int32).reshape((-1, 1, 2))
+                    temp_img = bev_image[:, :, 0].copy()
+                    cv2.polylines(temp_img, [pts], False, intensity, thickness=1)
+                    bev_image[:, :, 0] = np.maximum(bev_image[:, :, 0], temp_img)
     
     def process_scene(self, scene_token: str) -> List[Dict]:
         """
@@ -302,6 +582,11 @@ class BEVGenerator:
             waypoint_filename = f"{scene_name}_sample_{idx:04d}_waypoints.npy"
             waypoint_path = os.path.join(self.output_dir, 'waypoints', waypoint_filename)
             np.save(waypoint_path, waypoints)
+
+            # Save front camera image
+            cam_filename = f"{scene_name}_sample_{idx:04d}_cam_front.jpg"
+            cam_path = os.path.join(self.output_dir, 'cam_front', cam_filename)
+            self._save_cam_front_image(sample_token, cam_path)
             
             # Store result
             result = {
@@ -309,6 +594,7 @@ class BEVGenerator:
                 'sample_idx': idx,
                 'sample_token': sample_token,
                 'image_path': image_path,
+                'cam_front_path': cam_path,
                 'waypoint_path': waypoint_path,
                 'num_waypoints': len(waypoints),
                 **metadata
@@ -446,6 +732,25 @@ class BEVGenerator:
             print(f"Saved visualization to: {save_path}")
         
         plt.show()
+
+    def _save_cam_front_image(self, sample_token: str, save_path: str) -> None:
+        """
+        Save the CAM_FRONT image for a sample to disk.
+        """
+        sample = self.nusc.get('sample', sample_token)
+        cam_token = sample['data'].get('CAM_FRONT')
+        if not cam_token:
+            print(f"Warning: CAM_FRONT not available for sample {sample_token[:8]}")
+            return
+
+        sd_rec = self.nusc.get('sample_data', cam_token)
+        cam_path = os.path.join(self.nusc.dataroot, sd_rec['filename'])
+
+        try:
+            with Image.open(cam_path) as img:
+                img.save(save_path)
+        except Exception as exc:
+            print(f"Warning: failed to save CAM_FRONT for {sample_token[:8]}: {exc}")
 
 
 def main():
