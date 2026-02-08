@@ -20,15 +20,25 @@ def run_autonomous_stack():
     controller = LQRController(wheelbase=2.84)
     
     # Load Weights
-    if os.path.exists('model/neural_planner_model.pth'):
-        planner.load_state_dict(torch.load('model/neural_planner_model.pth', map_location=device))
-        print("Planner AI loaded.")
+    model_path = 'model/best_neural_planner.pth'
+    if os.path.exists(model_path):
+        planner.load_state_dict(torch.load(model_path, map_location=device))
+        print(f"Planner AI loaded from {model_path}")
     else:
         print("Error: Model weights not found!")
         return
 
     planner.eval()
     dataset = NuScenesBEVDataset(data_root='bev_data')
+    
+    # Filter for Validation Set (if available)
+    val_indices_path = 'model/val_indices.npy'
+    if os.path.exists(val_indices_path):
+        val_indices = np.load(val_indices_path)
+        dataset = torch.utils.data.Subset(dataset, val_indices)
+        print(f"Testing on {len(dataset)} UNSCEEN validation samples.")
+    else:
+        print("Warning: 'val_indices.npy' not found. Testing on RANDOM mix (may include training data).")
     
     # Visualization Parameters
     SCALE = 4.0
@@ -37,7 +47,7 @@ def run_autonomous_stack():
     # Test Loop
     for i in range(5): # Generate 5 examples
         idx = random.randint(0, len(dataset)-1)
-        image_tensor, target_waypoints = dataset[idx]
+        image_tensor, target_waypoints = dataset[idx] # Subset handles remapping index to original
         
         # A. PERCEPTION & PLANNING (AI)
         with torch.no_grad():

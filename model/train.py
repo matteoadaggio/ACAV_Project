@@ -1,7 +1,9 @@
 import torch
+import numpy as np
 import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
+import os
 
 from torch.utils.data import DataLoader, random_split
 from dataset import NuScenesBEVDataset
@@ -33,55 +35,112 @@ def train():
     val_size = len(full_dataset) - train_size
     train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
     
+    # Save validation indices for testing
+    val_indices = val_dataset.indices
+    np.save('val_indices.npy', val_indices)
+    print(f"Saved {len(val_indices)} validation indices to 'val_indices.npy'")
+    
     # DataLoader creation
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    # Increased num_workers for efficiency (set to 0 if Windows causes issues, but 4 is usually safe)
+    # pin_memory=True for faster host-to-device transfer
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
     
     print(f"Data: {len(train_dataset)} training, {len(val_dataset)} validation")
     
     # Optimizer and Loss Function
     criterion = nn.MSELoss()
-    optimizer = optim.AdamW(model.parameters(), lr=LR)
+    optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-5)
+    
+    # Learning Rate Scheduler
+    # Reduces LR by factor of 0.5 if validation loss doesn't improve for 5 epochs
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
     
     print("Starting Training...")
     
-    loss_history = []
+    train_loss_history = []
+    val_loss_history = []
+    best_val_loss = float('inf')
+
+    # Teacher Forcing Schedule
+    # Start high (0.5) and decay to 0.0 over 20 epochs
+    teacher_forcing_ratio = 0.5
 
     for epoch in range(EPOCHS):
+        # --- Training Phase ---
         model.train()
         running_loss = 0.0
+        
+        # Decay Teacher Forcing
+        if epoch < 20:
+             teacher_forcing_ratio = 0.5 * (1 - epoch / 20)
+        else:
+             teacher_forcing_ratio = 0.0
         
         for i, (inputs, targets) in enumerate(train_loader):
             inputs, targets = inputs.to(device), targets.to(device)
             
             optimizer.zero_grad()
-            outputs = model(inputs)
+            
+            # Pass targets and ratio for Teacher Forcing
+            outputs = model(inputs, teacher_forcing_targets=targets, teacher_forcing_ratio=teacher_forcing_ratio)
+            
             loss = criterion(outputs, targets)
             loss.backward()
+            
+            # Gradient Clipping (Optional but good for stability)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
             optimizer.step()
             
             running_loss += loss.item()
             
-        avg_loss = running_loss / len(train_loader)
+        avg_train_loss = running_loss / len(train_loader)
+        train_loss_history.append(avg_train_loss)
         
-        loss_history.append(avg_loss)
+        # --- Validation Phase ---
+        model.eval()
+        running_val_loss = 0.0
+        with torch.no_grad():
+            for inputs, targets in val_loader:
+                inputs, targets = inputs.to(device), targets.to(device)
+                outputs = model(inputs)
+                loss = criterion(outputs, targets)
+                running_val_loss += loss.item()
         
-        if (epoch+1) % 10 == 0 or epoch == 0:
-            print(f"Epoch {epoch+1}/{EPOCHS} | Loss: {avg_loss:.6f}")
+        avg_val_loss = running_val_loss / len(val_loader)
+        val_loss_history.append(avg_val_loss)
+        
+        # Scheduler Step
+        scheduler.step(avg_val_loss)
+        
+        # Checkpointing (Save Best Model)
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save(model.state_dict(), 'best_neural_planner.pth')
+            saved_msg = "(*)" # Indicator for saved model
+        else:
+            saved_msg = ""
+        
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"Epoch {epoch+1}/{EPOCHS} | Train Loss: {avg_train_loss:.6f} | Val Loss: {avg_val_loss:.6f} | LR: {current_lr:.2e} {saved_msg}")
 
     # Loss Plotting
     plt.figure(figsize=(10, 5))
-    plt.plot(loss_history, label='Training Loss')
+    plt.plot(train_loss_history, label='Training Loss')
+    plt.plot(val_loss_history, label='Validation Loss')
     plt.title("Learning Curve")
     plt.xlabel("Epochs")
-    plt.ylabel("Mean Error (MSE in meters^2)")
+    plt.ylabel("MSE Loss")
     plt.legend()
     plt.grid(True)
     
-    # Model saving
+    # Save final model
+    torch.save(model.state_dict(), 'neural_planner_final.pth')
+    print(f"Training Complete. Best Validation Loss: {best_val_loss:.6f}")
+    print("Models saved: 'best_neural_planner.pth' (best) and 'neural_planner_final.pth' (final)")
+    
     plt.show()
-    torch.save(model.state_dict(), 'neural_planner_model.pth')
-    print("Model saved as neural_planner_model.pth")
 
 if __name__ == "__main__":
     train()
