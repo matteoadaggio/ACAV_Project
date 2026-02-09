@@ -29,12 +29,22 @@ class NeuralPlanner(nn.Module):
         self.encoder_features = self.backbone.fc.in_features # 512
         self.backbone.fc = nn.Identity() # Pass through raw features
         
+        # --- VELOCITY ENCODER ---
+        # Fuse Image Features (512) + Velocity (1) -> GRU Hidden (512)
+        self.velocity_fusion = nn.Sequential(
+            nn.Linear(512 + 1, 512),
+            nn.ReLU()
+        )
+        
         # --- DECODER (GRU RNN) ---
         self.hidden_size = 512
         self.num_waypoints = num_waypoints
         
-        # GRU Cell: Input is (x,y) = 2 inputs. Hidden state is features = 512.
-        self.gru_cell = nn.GRUCell(input_size=2, hidden_size=self.hidden_size)
+        # GRU Cell: 
+        #   Old Input: (x,y) = 2
+        #   New Input: (x,y) + Context (512) = 514
+        self.gru_input_size = 2 + 512
+        self.gru_cell = nn.GRUCell(input_size=self.gru_input_size, hidden_size=self.hidden_size)
         
         # Output Head: Hidden State -> Next Waypoint (dx, dy)
         self.regressor = nn.Sequential(
@@ -44,12 +54,13 @@ class NeuralPlanner(nn.Module):
             nn.Linear(128, 2) # Output: x, y
         )
 
-    def forward(self, x, teacher_forcing_targets=None, teacher_forcing_ratio=0.0):
+    def forward(self, x, velocity, teacher_forcing_targets=None, teacher_forcing_ratio=0.0):
         """
         Forward Pass with Autoregression.
         
         Args:
             x: Input images [Batch, Channels, H, W]
+            velocity: Current Ego Velocity [Batch, 1]
             teacher_forcing_targets: Ground Truth waypoints [Batch, 10, 2] (optional)
             teacher_forcing_ratio: Probability of using GT input (0.0 to 1.0)
         """
@@ -57,34 +68,37 @@ class NeuralPlanner(nn.Module):
         
         # 1. Encode Image -> Hidden State
         # [Batch, 512, 1, 1] -> [Batch, 512]
-        features = self.backbone(x) 
-        hidden = features # Initialize GRU hidden state with Image Features
+        img_features = self.backbone(x) 
         
-        # 2. Decoding Loop
+        # 2. Fuse Velocity -> Initial Hidden State
+        # Concatenate [Batch, 512] + [Batch, 1] -> [Batch, 513]
+        fusion_input = torch.cat([img_features, velocity], dim=1)
+        hidden = self.velocity_fusion(fusion_input) # [Batch, 512]
+        
+        # 3. Decoding Loop
         predictions = []
         
         # Start at (0,0) (Ego relative position)
-        current_input = torch.zeros(batch_size, 2).to(x.device) 
+        current_pos_input = torch.zeros(batch_size, 2).to(x.device) 
         
         for t in range(self.num_waypoints):
+            # Context-Aware Input: Concatenate Position (2) + Map Context (512)
+            # [Batch, 514]
+            rnn_input = torch.cat([current_pos_input, img_features], dim=1)
+            
             # GRU Step
-            hidden = self.gru_cell(current_input, hidden)
+            hidden = self.gru_cell(rnn_input, hidden)
             
             # Predict next point (absolute position in ego frame)
-            # We predict the position directly. 
-            # (Alternative: predict displacement and add to previous)
             next_point = self.regressor(hidden)
             
             predictions.append(next_point)
             
             # Prepare input for next step
-            # Teacher Forcing Logic:
-            # If training and lucky roll, use Ground Truth as next input.
-            # Otherwise use model's own prediction.
             if teacher_forcing_targets is not None and torch.rand(1).item() < teacher_forcing_ratio:
-                 current_input = teacher_forcing_targets[:, t, :] # Use GT for NEXT step input
+                 current_pos_input = teacher_forcing_targets[:, t, :] # Use GT for NEXT step input
             else:
-                 current_input = next_point # Autoregression
+                 current_pos_input = next_point # Autoregression
         
         # Stack predictions: [Batch, num_waypoints, 2]
         return torch.stack(predictions, dim=1)

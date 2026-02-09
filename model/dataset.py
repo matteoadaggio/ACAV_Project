@@ -6,6 +6,8 @@ import glob
 from PIL import Image
 import torchvision.transforms as transforms
 
+import json
+
 class NuScenesBEVDataset(Dataset):
     def __init__(self, data_root='../bev_data', transform=None):
         """
@@ -15,15 +17,30 @@ class NuScenesBEVDataset(Dataset):
         self.data_root = data_root
         self.images_dir = os.path.join(data_root, 'images')
         self.waypoints_dir = os.path.join(data_root, 'waypoints')
+        self.metadata_path = os.path.join(data_root, 'metadata', 'dataset.json') # New metadata file
         
-        # Find all image files sorted
-        self.image_files = sorted(glob.glob(os.path.join(self.images_dir, '*.png')))
+        self.samples = []
         
-        # Check data presence
-        if len(self.image_files) == 0:
-            raise RuntimeError(f"No image found in {self.images_dir}")
+        # Try to load from metadata JSON (Preferred)
+        if os.path.exists(self.metadata_path):
+            print(f"Loading metadata from {self.metadata_path}...")
+            with open(self.metadata_path, 'r') as f:
+                self.samples = json.load(f)
+            print(f"Dataset loaded: {len(self.samples)} samples found in metadata.")
+        else:
+            # Fallback to file globbing (Legacy)
+            print("Metadata not found. Falling back to file globbing (velocity will be 0.0)")
+            image_files = sorted(glob.glob(os.path.join(self.images_dir, '*.png')))
+            for img_path in image_files:
+                self.samples.append({
+                    'image_path': img_path,
+                    'waypoint_path': img_path.replace('images', 'waypoints').replace('.png', '_waypoints.npy'),
+                    'ego_velocity': 0.0 # Default
+                })
             
-        print(f"Dataset loaded: found {len(self.image_files)} samples.")
+            if len(self.samples) == 0:
+                raise RuntimeError(f"No image found in {self.images_dir}")
+            print(f"Dataset loaded: found {len(self.samples)} samples via glob.")
 
         # PIL to Tensor transformation
         if transform:
@@ -34,28 +51,42 @@ class NuScenesBEVDataset(Dataset):
             ])
 
     def __len__(self):
-        return len(self.image_files)
+        return len(self.samples)
 
     def __getitem__(self, idx):
+        item = self.samples[idx]
+        
         # 1. Load image
-        img_path = self.image_files[idx]
+        # Metadata might store absolute or relative path, handle both
+        img_path = item['image_path']
+        if not os.path.isabs(img_path) and not os.path.exists(img_path):
+             img_path = os.path.join(self.data_root, 'images', os.path.basename(img_path))
+             
+        if not os.path.exists(img_path):
+             # Fallback logic for colab/local path mismatch
+             img_path = os.path.join(self.images_dir, os.path.basename(item['image_path']))
+             
         image = Image.open(img_path).convert('RGB') 
         image_tensor = self.transform(image)
 
         # 2. Load waypoints
-        base_name = os.path.basename(img_path).replace('.png', '_waypoints.npy')
-        waypoint_path = os.path.join(self.waypoints_dir, base_name)
+        # Metadata might store absolute or relative path, handle both
+        wp_path = item['waypoint_path']
+        if not os.path.isabs(wp_path) and not os.path.exists(wp_path):
+             wp_path = os.path.join(self.data_root, 'waypoints', os.path.basename(wp_path))
+             
+        if not os.path.exists(wp_path):
+             # Fallback logic for colab/local path mismatch
+             wp_path = os.path.join(self.waypoints_dir, os.path.basename(item['waypoint_path']))
         
-        # Alternative naming handling
-        if not os.path.exists(waypoint_path):
-            waypoint_path = os.path.join(self.waypoints_dir, base_name.replace('_sample', ''))
-
-        if not os.path.exists(waypoint_path):
-             raise FileNotFoundError(f"Waypoint not found for {base_name}")
-
-        waypoints = np.load(waypoint_path)
+        waypoints = np.load(wp_path)
         
-        # The model expects 10 points, handle edge cases
+        # Load Velocity (Input)
+        # Default to 0.0 if not found (backward compatibility)
+        curr_velocity = item.get('ego_velocity', 0.0) 
+        velocity_tensor = torch.tensor([curr_velocity], dtype=torch.float32)
+
+        # Ensure target_num_points = 10
         target_num_points = 10
         current_num_points = waypoints.shape[0]
         
@@ -72,7 +103,8 @@ class NuScenesBEVDataset(Dataset):
                 waypoints = np.vstack((waypoints, padding))
 
         waypoints_tensor = torch.from_numpy(waypoints).float()
-        return image_tensor, waypoints_tensor
+        
+        return image_tensor, velocity_tensor, waypoints_tensor
 
 # --- DATASET TEST ---
 """if __name__ == "__main__":

@@ -794,7 +794,7 @@ def main():
     """Main function to generate BEV data"""
     
     # Configuration
-    DATAROOT = './data/v1.0-mini'
+    DATAROOT = './data/data/v1.0-mini'
     OUTPUT_DIR = './bev_data'
     
     # BEV parameters

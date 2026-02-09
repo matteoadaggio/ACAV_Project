@@ -63,8 +63,9 @@ def train():
     best_val_loss = float('inf')
 
     # Teacher Forcing Schedule
-    # Start high (0.5) and decay to 0.0 over 20 epochs
-    teacher_forcing_ratio = 0.5
+    # Start at 1.0 (always use GT) to learn the patterns first.
+    # Decay to 0.0 over 50 epochs to gradually introduce autonomy.
+    teacher_forcing_ratio = 1.0
 
     for epoch in range(EPOCHS):
         # --- Training Phase ---
@@ -72,18 +73,18 @@ def train():
         running_loss = 0.0
         
         # Decay Teacher Forcing
-        if epoch < 20:
-             teacher_forcing_ratio = 0.5 * (1 - epoch / 20)
+        if epoch < 50:
+             teacher_forcing_ratio = 1.0 * (1 - epoch / 50)
         else:
              teacher_forcing_ratio = 0.0
         
-        for i, (inputs, targets) in enumerate(train_loader):
-            inputs, targets = inputs.to(device), targets.to(device)
+        for i, (inputs, velocity, targets) in enumerate(train_loader):
+            inputs, velocity, targets = inputs.to(device), velocity.to(device), targets.to(device)
             
             optimizer.zero_grad()
             
             # Pass targets and ratio for Teacher Forcing
-            outputs = model(inputs, teacher_forcing_targets=targets, teacher_forcing_ratio=teacher_forcing_ratio)
+            outputs = model(inputs, velocity, teacher_forcing_targets=targets, teacher_forcing_ratio=teacher_forcing_ratio)
             
             loss = criterion(outputs, targets)
             loss.backward()
@@ -102,9 +103,9 @@ def train():
         model.eval()
         running_val_loss = 0.0
         with torch.no_grad():
-            for inputs, targets in val_loader:
-                inputs, targets = inputs.to(device), targets.to(device)
-                outputs = model(inputs)
+            for inputs, velocity, targets in val_loader:
+                inputs, velocity, targets = inputs.to(device), velocity.to(device), targets.to(device)
+                outputs = model(inputs, velocity)
                 loss = criterion(outputs, targets)
                 running_val_loss += loss.item()
         

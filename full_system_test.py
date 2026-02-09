@@ -47,16 +47,22 @@ def run_autonomous_stack():
     # Test Loop
     for i in range(5): # Generate 5 examples
         idx = random.randint(0, len(dataset)-1)
-        image_tensor, target_waypoints = dataset[idx] # Subset handles remapping index to original
+        image_tensor, velocity, target_waypoints = dataset[idx] # Subset handles remapping index to original
+        
+        # Add batch dimension [1, C, H, W] and [1, 1]
+        image_tensor = image_tensor.unsqueeze(0).to(device)
+        velocity = velocity.unsqueeze(0).to(device)
         
         # A. PERCEPTION & PLANNING (AI)
         with torch.no_grad():
-            input_tensor = image_tensor.unsqueeze(0).to(device)
-            pred_waypoints = planner(input_tensor)[0].cpu().numpy() # [10, 2]
+            pred_waypoints = planner(image_tensor, velocity) # Now takes velocity
+            pred_waypoints = pred_waypoints.squeeze(0).cpu().numpy() # [10, 2]
             
         # B. CONTROL (LQR)
         # Calculate steering based on predicted trajectory
-        steer_rad = controller.compute_steering(pred_waypoints, velocity=15.0/3.6) # 15 km/h
+        # Use actual velocity from dataset for controller (clamp to min 1.0 m/s to avoid div/0)
+        v_ego = max(velocity.item(), 1.0)
+        steer_rad = controller.compute_steering(pred_waypoints, velocity=v_ego)
         tire_steer_deg = np.degrees(steer_rad)
         steering_wheel_deg= tire_steer_deg * 16.0 # Assuming a steering ratio of 16:1
         
@@ -64,7 +70,7 @@ def run_autonomous_stack():
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
         
         # Plot 1: BEV Scenario
-        bg_image = image_tensor.permute(1, 2, 0).numpy()
+        bg_image = image_tensor.squeeze(0).cpu().permute(1, 2, 0).numpy()
         ax1.imshow(bg_image)
         
         # Convert and plot trajectories
