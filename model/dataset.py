@@ -7,14 +7,17 @@ from PIL import Image
 import torchvision.transforms as transforms
 
 import json
+import random
 
 class NuScenesBEVDataset(Dataset):
-    def __init__(self, data_root='../bev_data', transform=None):
+    def __init__(self, data_root='../bev_data', transform=None, augment=False):
         """
         Args:
             data_root (string): path to the bev_data folder.
+            augment (bool): If True, applies random horizontal flips.
         """
         self.data_root = data_root
+        self.augment = augment
         self.images_dir = os.path.join(data_root, 'images')
         self.waypoints_dir = os.path.join(data_root, 'waypoints')
         self.metadata_path = os.path.join(data_root, 'metadata', 'dataset.json') # New metadata file
@@ -60,24 +63,37 @@ class NuScenesBEVDataset(Dataset):
         # Metadata might store absolute or relative path, handle both
         img_path = item['image_path']
         if not os.path.isabs(img_path) and not os.path.exists(img_path):
-             img_path = os.path.join(self.data_root, 'images', os.path.basename(img_path))
+             # Fix for Windows paths on Linux: replace backslash with forward slash
+             filename = os.path.basename(img_path.replace('\\', '/'))
+             img_path = os.path.join(self.data_root, 'images', filename)
              
         if not os.path.exists(img_path):
              # Fallback logic for colab/local path mismatch
-             img_path = os.path.join(self.images_dir, os.path.basename(item['image_path']))
+             filename = os.path.basename(item['image_path'].replace('\\', '/'))
+             img_path = os.path.join(self.images_dir, filename)
              
         image = Image.open(img_path).convert('RGB') 
+        
+        # --- Augmentation (Random Horizontal Flip) ---
+        is_flipped = False
+        if self.augment and random.random() > 0.5:
+            image = image.transpose(Image.FLIP_LEFT_RIGHT)
+            is_flipped = True
+            
         image_tensor = self.transform(image)
 
         # 2. Load waypoints
         # Metadata might store absolute or relative path, handle both
         wp_path = item['waypoint_path']
         if not os.path.isabs(wp_path) and not os.path.exists(wp_path):
-             wp_path = os.path.join(self.data_root, 'waypoints', os.path.basename(wp_path))
+             # Fix for Windows paths on Linux
+             filename = os.path.basename(wp_path.replace('\\', '/'))
+             wp_path = os.path.join(self.data_root, 'waypoints', filename)
              
         if not os.path.exists(wp_path):
              # Fallback logic for colab/local path mismatch
-             wp_path = os.path.join(self.waypoints_dir, os.path.basename(item['waypoint_path']))
+             filename = os.path.basename(item['waypoint_path'].replace('\\', '/'))
+             wp_path = os.path.join(self.waypoints_dir, filename)
         
         waypoints = np.load(wp_path)
         
@@ -101,6 +117,10 @@ class NuScenesBEVDataset(Dataset):
                 last_point = waypoints[-1]
                 padding = np.tile(last_point, (missing, 1))
                 waypoints = np.vstack((waypoints, padding))
+
+        # Apply augmentation directly to numpy array
+        if is_flipped:
+            waypoints[:, 0] *= -1 # Negate X coordinate (Left <-> Right)
 
         waypoints_tensor = torch.from_numpy(waypoints).float()
         

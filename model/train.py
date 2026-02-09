@@ -23,20 +23,35 @@ def train():
     # Model creation
     model = NeuralPlanner(in_channels=3, num_waypoints=10).to(device)
     
-    # Instantiate the Dataset
-    try:
-        full_dataset = NuScenesBEVDataset(data_root='../bev_data')
-    except FileNotFoundError:
-        print("Error: Folder '../bev_data' not found.")
-        return
-
-    # Train/Validation Split (80% / 20%)
-    train_size = int(0.8 * len(full_dataset))
-    val_size = len(full_dataset) - train_size
-    train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
+    # Instantiate Datasets
+    # refined strategy: 
+    # 1. Get total length
+    base_dataset = NuScenesBEVDataset(data_root='../bev_data')
+    total_len = len(base_dataset)
+    
+    # 2. Define Split
+    train_size = int(0.8 * total_len)
+    val_size = total_len - train_size
+    
+    # 3. Generate Indices
+    # We use random_split just to get the indices, not the subsets
+    dummy_train, dummy_val = random_split(range(total_len), [train_size, val_size])
+    train_indices = dummy_train.indices
+    val_indices = dummy_val.indices
+    
+    # 4. Create Subsets with different augmentation flags
+    # Train: Augment = True
+    train_dataset = torch.utils.data.Subset(
+        NuScenesBEVDataset(data_root='../bev_data', augment=True), 
+        train_indices
+    )
+    # Val: Augment = False (Clean)
+    val_dataset = torch.utils.data.Subset(
+        NuScenesBEVDataset(data_root='../bev_data', augment=False), 
+        val_indices
+    )
     
     # Save validation indices for testing
-    val_indices = val_dataset.indices
     np.save('val_indices.npy', val_indices)
     print(f"Saved {len(val_indices)} validation indices to 'val_indices.npy'")
     
