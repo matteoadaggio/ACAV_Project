@@ -13,6 +13,9 @@ def train():
     
     # Device configuration
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Enable MPS if available (for Apple Silicon hardware)
+    if torch.backends.mps.is_available() and torch.backends.mps.is_built():
+        device = torch.device("mps")
     print(f"Using device: {device}")
     
     # Training parameters
